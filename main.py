@@ -6,7 +6,7 @@ import os
 import platform
 
 import locations
-from scraper import ForRent, ForSale
+from scraper import ForSale, Monthly, Daily
 import asyncio
 from data_storage import db
 
@@ -27,21 +27,20 @@ async def run():
 
     logger.info("START TO SCRAPE")
 
-    for i, location_id in enumerate(list(locations.YEREVAN.values())):
-        await ForRent.Apartments.update_data(location_id, ForRent.MONTHLY)
-        await ForRent.Apartments.update_data(location_id, ForRent.DAILY)
-        await ForRent.Houses.update_data(location_id, ForRent.MONTHLY)
-        await ForRent.Houses.update_data(location_id, ForRent.DAILY)
+    await Monthly.Apartments.update_data(locations.YEREVAN)
+    await Daily.Apartments.update_data(locations.YEREVAN)
+    await Monthly.Houses.update_data(locations.YEREVAN)
+    await Daily.Houses.update_data(locations.YEREVAN)
 
-        await ForSale.Apartments.update_data(location_id)
-        await ForSale.Houses.update_data(location_id)
+    await ForSale.Apartments.update_data(locations.YEREVAN)
+    await ForSale.Houses.update_data(locations.YEREVAN)
 
     logger.info("UPDATING GOOGLE SHEET")
     ret = db.updateSheet()
-    # logger.info(f'Updated {ret.} rows on google sheet')
+    logger.info(f"Updated {ret['updates']['updatedRows']} rows on google sheet")
     logger.info("FINISHED SCRAPING")
     
-    
+
 async def main():
     if platform.system() in ['Linux', 'Darwin']:
         os.environ['TZ'] = 'Asia/Yerevan'

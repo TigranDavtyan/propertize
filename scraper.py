@@ -1,16 +1,11 @@
 import asyncio
 import logging
-import os
-import pickle
 import random
 import re
-import time
-import traceback
 from datetime import datetime
 
-import pandas as pd
 import requests
-
+import locations
 from data_storage import db
 from properties import *
 
@@ -131,14 +126,16 @@ class ListAmParser:
         
 
 class Category:
-    def __init__(self, categoryid, url, name):
+    def __init__(self, categoryid, url, name, monthly_or_daily = 0):
         self.categoryid = categoryid
         self.item_url = 'https://www.list.am/en/item/{itemid}'
         self.url = url
         self.headers = {'User-Agent' : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:53.0) Gecko/20100101 Firefox/53.0'}
         self.itemids = []
         self.name = name
+        self.monthly_or_daily = monthly_or_daily
 
+        self.new = 0
         self.updated = 0
         self.same = 0
         self.error = 0
@@ -148,15 +145,12 @@ class Category:
     async def sleepRandom(self):
         await asyncio.sleep(random.random()*0.8 + 0.5)
 
-    def getUrl(self, location_id, page = None, monthly_or_daily=None):
+    def getUrl(self, location_id, page = None):
         if not page or page < 2:
             pagestr = ''
         else: pagestr = page
 
-        if monthly_or_daily:
-            page_url = self.url.format(id=self.categoryid, page=pagestr, monthly_or_daily = monthly_or_daily, location_id = location_id)
-        else:
-            page_url = self.url.format(id=self.categoryid, page=pagestr, monthly_or_daily = 0,                location_id = location_id)
+        page_url = self.url.format(id=self.categoryid, page=pagestr, monthly_or_daily = self.monthly_or_daily, location_id = location_id)
 
         logger.debug(page_url)
         response = requests.get(page_url, headers=self.headers)
@@ -175,11 +169,10 @@ class Category:
             return response.status_code
         return response.content.decode('utf-8')
     
-    async def getItemIds(self, location_id, monthly_or_daily=None, limit=None):
+    async def getItemIds(self, location_id, limit=None):
         next = 1
-        global_limit = len(self.itemids) + limit if limit else 0
         while True:
-            page = self.getUrl(location_id, next, monthly_or_daily)
+            page = self.getUrl(location_id, next)
             if not page:
                 next += 1
                 continue
@@ -201,12 +194,11 @@ class Category:
 
                 item['itemid'] = idprice[0]
                 item['location'] = location_id
-                if monthly_or_daily:
-                    item['monthly_or_daily'] = monthly_or_daily
+                item['monthly_or_daily'] = self.monthly_or_daily
                 self.itemids.append(item)
 
-            if limit and len(self.itemids) > global_limit:
-                self.itemids = self.itemids[:global_limit]
+            if limit and len(self.itemids) > limit:
+                self.itemids = self.itemids[:limit]
                 break
 
             next = ListAmParser.Category.getNextPageId(page)
@@ -222,7 +214,7 @@ class Category:
     async def getItems(self):
         db.createBackup()
         #if there is an item id which exists in db but not in the newly scraped list we flag them as finished
-        existing_ids = set([d[0] for d in db.fetchall('SELECT itemid FROM listings WHERE website = "listam" AND closed_item=0;')])
+        existing_ids = set([d[0] for d in db.fetchall('SELECT itemid FROM listings WHERE website = "list.am" AND closed_item=0 AND categoryid = ? AND monthly_or_daily=?;',(self.categoryid, self.monthly_or_daily))])
         new_ids = set([item['itemid'] for item in self.itemids])
         
         for itemid in existing_ids.difference(new_ids):
@@ -237,9 +229,9 @@ class Category:
         
         for i,item in enumerate(self.itemids):
             if i % percent_modulo == 0:
-                logger.info(f'Processed {round(i/len(self.itemids)*100)}% of {len(self.itemids)} items. Same {self.same} |  Updated {self.updated} |  Error {self.error} | No price {self.no_price} | Closed {self.closed}')
+                logger.info(f'Processed {round(i/len(self.itemids)*100)}% of {len(self.itemids)} items. Same {self.same} | New {self.new} |  Updated {self.updated} |  Error {self.error} | No price {self.no_price} | Closed {self.closed}')
             
-            if self.error > 3 and self.error/(self.updated+self.same+self.no_price+1)*100 > 8:
+            if self.error > 20 and self.error/(self.updated+self.same+self.no_price+1)*100 > 8:
                 logger.error('Stopping scraping because too many error')
                 db.restoreBackup()
                 return False
@@ -262,8 +254,13 @@ class Category:
                     properties['website'] = 'list.am'
                     properties.update(item)
 
-                    db.insertOrUpdateListing(properties)
-                    self.updated += 1
+                    ret = db.insertOrUpdateListing(properties)
+                    if ret == 0:
+                        self.same += 1
+                    elif ret == 1:
+                        self.updated += 1
+                    elif ret == 2:
+                        self.new += 1
                 elif page == 404:
                     db.closeItem(item['itemid'])
                     self.closed += 1
@@ -282,15 +279,15 @@ class Category:
 
             await self.sleepRandom()
 
-        logger.info(f'ListAm {self.name} : Same {self.same} |  Updated {self.updated} |  Error {self.error} | No price {self.no_price} | Closed {self.closed}')
+        logger.info(f'ListAm {self.name} : Same {self.same} | New {self.new} |  Updated {self.updated} |  Error {self.error} | No price {self.no_price} | Closed {self.closed}')
         return True
     
-    async def update_data(self, location_id, monthly_or_daily=None, limit = None):
+    async def update_data(self, location_group: locations.LocationGroup, limit = None):
         logger.info(f"STARTING TO SCRAPE LIST AM {self.name}")
 
         logger.info('Getting item ids...')
-
-        await self.getItemIds(location_id, monthly_or_daily, limit)
+        for i, location_id in enumerate(list(location_group.values())):
+            await self.getItemIds(location_id, limit)
 
         logger.info(f'Found {len(self.itemids)} listings')
         
@@ -313,13 +310,23 @@ class ForRent:
     MONTHLY = 1
     DAILY = 2
     
-    Apartments = Category(56, url, 'ForRent Apartments')
-    Houses = Category(63, url, 'ForRent Houses')
-    Rooms = Category(212, url, 'ForRent Rooms')
-    CommercialHouseProperties = Category(59, url, 'ForRent CommercialHouseProperties')
-    EventVenues = Category(267, url, 'ForRent EventVenues')
-    GaragesandParking = Category(175, url, 'ForRent GaragesandParking')
-    TrailersandBooths = Category(58, url, 'ForRent TrailersandBooths')
+class Monthly:
+    Apartments = Category(56, ForRent.url, 'ForRent Apartments monthly',ForRent.MONTHLY)
+    Houses = Category(63, ForRent.url, 'ForRent Houses monthly',ForRent.MONTHLY)
+    Rooms = Category(212, ForRent.url, 'ForRent Rooms monthly',ForRent.MONTHLY)
+    CommercialHouseProperties = Category(59, ForRent.url, 'ForRent CommercialHouseProperties monthly',ForRent.MONTHLY)
+    EventVenues = Category(267, ForRent.url, 'ForRent EventVenues monthly',ForRent.MONTHLY)
+    GaragesandParking = Category(175, ForRent.url, 'ForRent GaragesandParking monthly',ForRent.MONTHLY)
+    TrailersandBooths = Category(58, ForRent.url, 'ForRent TrailersandBooths monthly',ForRent.MONTHLY)
+
+class Daily:
+    Apartments = Category(56, ForRent.url, 'ForRent Apartments daily',ForRent.DAILY)
+    Houses = Category(63, ForRent.url, 'ForRent Houses daily',ForRent.DAILY)
+    Rooms = Category(212, ForRent.url, 'ForRent Rooms daily',ForRent.DAILY)
+    CommercialHouseProperties = Category(59, ForRent.url, 'ForRent CommercialHouseProperties daily',ForRent.DAILY)
+    EventVenues = Category(267, ForRent.url, 'ForRent EventVenues daily',ForRent.DAILY)
+    GaragesandParking = Category(175, ForRent.url, 'ForRent GaragesandParking daily',ForRent.DAILY)
+    TrailersandBooths = Category(58, ForRent.url, 'ForRent TrailersandBooths daily',ForRent.DAILY)
     
 class ForSale:
     url = 'https://www.list.am/en/category/{id}/{page}?type=1&n={location_id}&price1=&price2=&crc=-1&_a5=0&_a39=0&_a40=0&_a3_1=&_a3_2=&_a4=0&_a37=0&_a11_1=&_a11_2=&_a78=0&_a38=0'

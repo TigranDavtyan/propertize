@@ -4,3 +4,4 @@ Requests==2.28.2
 scikit-learn
 plotly
 kaleido
+gspread

@@ -66,7 +66,8 @@ class HouseProperties:
     userid                   = property( bidict({}),lambda val : int(val)  if val else None)
     posted_date              = property( bidict({}),lambda val : val if val else None)
     update_date              = property( bidict({}),lambda val : val if val else None)
-    closed_item              = property( bidict({}),lambda val : val if val else None)
+    closed_item              = property( bidict({'active':0, 'closed':1}))
+    monthly_or_daily         = property( bidict({'monthly':1, 'daily':2}))
 
     @staticmethod
     def get(key, value) -> int:

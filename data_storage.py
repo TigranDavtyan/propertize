@@ -2,7 +2,15 @@ import ast
 import datetime
 import shutil
 import sqlite3 as lite
+from datetime import datetime
+
 import gspread
+import pandas as pd
+from bidict import ON_DUP_DROP_OLD
+
+import locations
+import properties
+
 
 nullable_columns = ['location','construction_type','new_construction','elevator','balcony','furniture','renovation','children_are_welcome','pets_allowed','utility_payments','prepayment','type','condition','garage','exterior_finish','location_from_the_street','entrance','lease_type','minimum_rental_period','interior_finishing','mortgage_is_possible','handover_date','floor_area','floors_in_the_building','number_of_bathrooms','number_of_rooms','ceiling_height','floor','city','street','number_of_guests','land_area','room_area','userid','monthly_or_daily']
 
@@ -19,7 +27,7 @@ class DataDatabase:
 
         self.createTables()
 
-        self.gc = gspread.service_account('C:/Users/Admin/Downloads/propertize-393618-2163bcf5743d.json')
+        self.gc = gspread.service_account('propertize-393618-2163bcf5743d.json')
         self.sheet = self.gc.open("propertize").sheet1
 
 
@@ -87,7 +95,7 @@ class DataDatabase:
         shutil.copy2('./data.db.backup','./data.db')
         
     def insertOrUpdateListing(self, item):
-        '''same - 0  |  updated - 1'''
+        '''same - 0  |  updated - 1  |  new - 2'''
         item = fillNone(item)
         item_db = self.fetchone('SELECT itemid, original_price, updates FROM listings WHERE itemid = ?;', (item['itemid'],))
         if item_db:
@@ -143,21 +151,51 @@ class DataDatabase:
                         item['userid'],
                         item['monthly_or_daily'],
                         item['dollar_price'],item['original_price'],item['posted_date'],item['update_date'],item['closed_item'], str(updates)))
-            return 1
+            return 2
         
     def closeItem(self, itemid):
         updates = ast.literal_eval(self.fetchone('SELECT updates FROM listings WHERE itemid = ?;', (itemid,))[0])
 
-        updates[str(datetime.datetime.now().date())] = -1
+        updates[str(datetime.now().date())] = -1
 
         self.query("UPDATE listings SET closed_item = 1, update_date = DATETIME('now'), updates = ? WHERE itemid = ?", (str(updates), itemid))
 
     def updateSheet(self):
         data = db.fetchall('SELECT * FROM listings;')
+
+        cls = properties.HouseProperties
+
+        df = pd.read_sql('SELECT * FROM listings;', self.conn)
+
+        r_df = df.copy(True)
+
+        # List of column names you want to convert to integer
+        columns_to_convert = ['location', 'construction_type',
+            'new_construction', 'elevator', 'balcony', 'furniture', 'renovation',
+            'children_are_welcome', 'pets_allowed', 'utility_payments',
+            'prepayment', 'type', 'condition', 'garage', 'exterior_finish',
+            'location_from_the_street', 'entrance', 'lease_type',
+            'minimum_rental_period', 'interior_finishing', 'mortgage_is_possible',
+            'handover_date', 'floor_area', 'floors_in_the_building',
+            'number_of_bathrooms', 'number_of_rooms', 'ceiling_height', 'floor',
+            'number_of_guests', 'land_area', 'room_area',
+            'userid', 'monthly_or_daily', 'dollar_price', 'original_price', 'closed_item', ]
+
+        # Convert the specified columns to integer type
+        r_df['monthly_or_daily'] = r_df['monthly_or_daily'].apply(lambda x: x if x == '1' or x == '2' else '')#   [(r_df['monthly_or_daily'] != 1) | (r_df['monthly_or_daily'] != 2)]['monthly_or_daily'] = 0
+        r_df[columns_to_convert] = r_df[columns_to_convert].apply(pd.to_numeric, errors="coerce", downcast="integer")
+
+        for column in df.columns:
+            r_df[column] = r_df[column].apply(cls.inverseGet, key=column)
+
+        r_df['location'] = r_df['location'].apply(locations.getLocationName)
+
+        r_df.fillna('',inplace=True)
+
         self.sheet.clear()
 
         self.sheet.insert_row([info[1] for info in db.fetchall("PRAGMA table_info(listings)")])
-        return self.sheet.insert_rows(data, row=2)
+        return self.sheet.insert_rows(r_df.values.tolist(), row=2)
         
 
 db = DataDatabase('data.db')
