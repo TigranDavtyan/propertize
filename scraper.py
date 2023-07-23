@@ -13,17 +13,18 @@ logger = logging.getLogger('listamscraper')
 
 class ListAmParser:
     class Category:
-        id_dollar = re.compile(r'item\/(\d+)\"><img data-original=\"//s\.list\.am/g/\d+/\d+\.[jpgwebp]+\"><div class=\"p\">(\$?[\d,]+ ?[֏₽]?)')#r'item\/(\d+)\".+?<div class=\"p\">(\$?[\d,]+ ?[֏₽]?)')
+        id_dollar = re.compile(r'item\/(\d+)\".*?><img data-original=\"//s\.list\.am/g/\d+/\d+\.[jpgwebp]+\"><div class=\"p\">(\$?[\d,]+ ?[֏₽]?)')
         next_page = re.compile(r'</span> &nbsp; <a href="/category/\d+/(\d+)?.*">Next')
 
         def getItemIdPrices(page: str):
-            return [[int(id), price.replace(',','').replace(' ','')] for id,price in re.findall(ListAmParser.Category.id_dollar, page)]
-        
+            return [[int(id), price.replace(',','').replace(' ','')] for id,price in ListAmParser.Category.id_dollar.findall(page)]
+
         def getNextPageId(page: str):
-            match = re.search(ListAmParser.Category.next_page, page)
+            match = ListAmParser.Category.next_page.search(page)
             if match:
                 return match.group(1)
             return match
+
     class Item:
         dollar_price = re.compile(r'<span>\$(\d{1,3}(,\d{3})*(\.\d+)?)')
         dram_price = re.compile(r'<span>([\d,]+)\s*֏')
@@ -176,7 +177,7 @@ class Category:
             if not page:
                 next += 1
                 continue
-            
+
             idprices = ListAmParser.Category.getItemIdPrices(page)
             for idprice in idprices:
                 item = {}

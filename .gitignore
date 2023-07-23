@@ -9,6 +9,8 @@ __pycache__/
 *.backup
 *.csv
 data.db
+*.ipynb
+*.json
 
 # Distribution / packaging
 .Python
